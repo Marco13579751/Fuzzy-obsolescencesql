@@ -265,7 +265,7 @@ if st.session_state["clinic"] is None:
     if st.button("Continue"):
         if not clinic_input.strip():
             st.error("Insert a clinic name")
-                else:
+        else:
             st.session_state["clinic"] = clinic_input.strip()
                         st.rerun()
     st.stop()
