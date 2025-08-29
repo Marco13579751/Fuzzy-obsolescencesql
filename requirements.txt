@@ -7,3 +7,4 @@ matplotlib==3.8.4
 streamlit-aggrid==0.3.4.post3
 psycopg2-binary==2.9.9
 requests==2.31.0
+ipython==8.26.0
