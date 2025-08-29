@@ -1,4 +1,4 @@
-    import streamlit as st
+import streamlit as st
 import numpy as np
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
