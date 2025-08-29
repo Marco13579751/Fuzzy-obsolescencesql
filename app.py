@@ -476,7 +476,7 @@ rule_f = [
 
 # Calculate criticity for each device
 # (Old manual parameters UI removed; parameters are now captured when adding a device.)
-
+    
 # Compute the fuzzy output (Criticity)
 def show_fuzzy_output(fuzzy_var, sim):
     # Forzo il calcolo
@@ -536,21 +536,14 @@ def show_fuzzy_output(fuzzy_var, sim):
 criticity_ctrl = ctrl.ControlSystem(rule_f)
 criticity_simulation = ctrl.ControlSystemSimulation(criticity_ctrl)
 
-reliability_score=show_fuzzy_output(reliability, reliability_simulation)
-mission_score=show_fuzzy_output(mission, mission_simulation)
+# Initialize variables to store scores
+reliability_score = None
+mission_score = None
+criticity_score = None
+obsolescenza = None
 
-criticity_simulation.input['mission_result'] = mission_score
-criticity_simulation.input['reliability_result'] = reliability_score
-
-#criticity_simulation.compute()
-
-#print(criticity_simulation.output['criticity'])
-criticity_score=show_fuzzy_output(criticity, criticity_simulation)
-
-
-
-# Store the result (scaled by 10 as in your Matlab code)
-obsolescenza = criticity_simulation.output['criticity'] * 10
+# Note: These simulations will be computed when actual input values are provided
+# through the device addition form or other input mechanisms
 
 
 # Helper: compute scores from provided parameters (without touching the global UI state)
@@ -624,14 +617,8 @@ def render_fuzzy_from_params(params: dict) -> dict:
     }
 
 
-if obsolescenza is not None:
-    st.write("**Obsolescence score:**", f"{obsolescenza:.2f}")
-    if obsolescenza > 60:
-        st.error("⚠️ Device partially obsolet")
-    else:
-        st.success("✅ Device in good condition")
-else:
-    st.info("🟡 Inserisci almeno un parametro per calcolare lo score")
+# Note: Obsolescence scores are computed when devices are added or viewed
+# through the device management interface below
 
 
 def gaussmf(x, mean, sigma):
@@ -879,3 +866,4 @@ if not df.equals(df_edited):
         st.success("Modifiche salvate!")
 else:
     st.write("### Nessuna modifica effettuata")
+
