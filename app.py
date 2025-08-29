@@ -267,7 +267,7 @@ if st.session_state["clinic"] is None:
             st.error("Insert a clinic name")
         else:
             st.session_state["clinic"] = clinic_input.strip()
-                        st.rerun()
+            st.rerun()
     st.stop()
 
 # --- Logout (reset clinic) ---
