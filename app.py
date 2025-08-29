@@ -622,6 +622,43 @@ criticity_score=show_fuzzy_output(criticity, criticity_simulation)
 obsolescenza = criticity_simulation.output['criticity'] * 10
 
 
+# Helper: compute scores from provided parameters (without touching the global UI state)
+def compute_scores_from_params(params: dict) -> dict:
+    # Fresh simulations to avoid shared state
+    _mission_sim = ctrl.ControlSystemSimulation(mission_ctrl)
+    _reliability_sim = ctrl.ControlSystemSimulation(reliability_ctrl)
+    _crit_ctrl = ctrl.ControlSystem(rule_f)
+    _crit_sim = ctrl.ControlSystemSimulation(_crit_ctrl)
+
+    # Inputs
+    _mission_sim.input['eq_function'] = float(params.get('eq_function') or 0.0)
+    _mission_sim.input['up_time'] = float(params.get('up_time') or 0.0)
+    _reliability_sim.input['normalized_age'] = float(params.get('normalized_age') or 0.0)
+    _reliability_sim.input['failure_rate'] = float(params.get('failure_rate') or 0.0)
+
+    # Compute parent scores
+    _reliability_sim.compute()
+    _mission_sim.compute()
+
+    rel = float(_reliability_sim.output.get('reliability', 0.0))
+    mis = float(_mission_sim.output.get('mission', 0.0))
+
+    # Feed into criticity
+    _crit_sim.input['mission_result'] = mis
+    _crit_sim.input['reliability_result'] = rel
+    _crit_sim.compute()
+
+    crit = float(_crit_sim.output.get('criticity', 0.0))
+    obs = crit * 10.0
+
+    return {
+        'reliability_score': rel,
+        'mission_score': mis,
+        'criticity_score': crit,
+        'obsolescenza': obs,
+    }
+
+
 if obsolescenza is not None:
     st.write("**Obsolescence score:**", f"{obsolescenza:.2f}")
     if obsolescenza > 60:
@@ -659,13 +696,41 @@ with st.expander("Add new device"):
     with colB:
         dev_purchase = st.date_input("Purchase date", value=None)
         dev_location = st.text_input("Location/Department")
+
+    st.markdown("**Initial parameters for this device**")
+    colP1, colP2, colP3 = st.columns(3)
+    with colP1:
+        p_eq_function = st.selectbox("Equipment function", options=[1,2,3,4], key="newdev_eq_function")
+        p_failure_rate = st.number_input("Failure rate", min_value=0.0, step=0.1, format="%.2f", key="newdev_failure")
+    with colP2:
+        p_cost = st.number_input("Cost", min_value=0.0, step=1.0, format="%.2f", key="newdev_cost")
+        p_up_time = st.number_input("Uptime", min_value=0.0, step=1.0, format="%.2f", key="newdev_uptime")
+    with colP3:
+        # normalized_age computed from purchase date if provided
+        if dev_purchase:
+            days = (datetime.date.today() - dev_purchase).days
+            p_norm_age = days / 365.0
+        else:
+            p_norm_age = st.number_input("Normalized age", min_value=0.0, step=0.1, format="%.2f", key="newdev_normage")
+        st.write(f"Computed age: {p_norm_age:.2f}")
+
     if st.button("Save device"):
         if not dev_name:
             st.error("Device name is required")
         else:
             try:
-                insert_device(clinic, dev_name, dev_model, dev_serial, dev_purchase, dev_location)
-                st.success("Device saved")
+                new_id = insert_device(clinic, dev_name, dev_model, dev_serial, dev_purchase, dev_location)
+                # Build params and compute scores
+                dev_params = {
+                    'normalized_age': p_norm_age,
+                    'eq_function': p_eq_function,
+                    'cost_levels': p_cost,
+                    'failure_rate': p_failure_rate,
+                    'up_time': p_up_time,
+                }
+                scores = compute_scores_from_params(dev_params)
+                insert_valuation(clinic, new_id, dev_params, scores)
+                st.success("Device and initial valuation saved")
                 st.rerun()
             except Exception as e:
                 st.error(f"Errore salvataggio device: {e}")
