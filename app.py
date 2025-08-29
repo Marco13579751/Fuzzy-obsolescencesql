@@ -632,6 +632,56 @@ else:
     st.info("🟡 Inserisci almeno un parametro per calcolare lo score")
 
 
+st.subheader("💾 Save device with these parameters")
+col_dev1, col_dev2 = st.columns(2)
+with col_dev1:
+    devp_name = st.text_input("Device name (required)")
+    devp_model = st.text_input("Model")
+    devp_serial = st.text_input("Serial number")
+with col_dev2:
+    devp_purchase = st.date_input("Purchase date", value=None, key="params_purchase_date")
+    devp_location = st.text_input("Location/Department", key="params_location")
+
+if st.button("Save device and valuation", key="save_device_and_valuation_from_params"):
+    clinic_current = st.session_state["clinic"]
+
+    if not devp_name.strip():
+        st.error("Device name is required")
+    else:
+        try:
+            # 1) Save device
+            new_device_id = insert_device(
+                clinic_current,
+                devp_name.strip(),
+                devp_model.strip() if devp_model else None,
+                devp_serial.strip() if devp_serial else None,
+                devp_purchase,
+                devp_location.strip() if devp_location else None,
+            )
+
+            # 2) Build parameters dict from current inputs
+            parametri_dict = {
+                nome: (val if val is not None else None)
+                for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs)
+            }
+
+            # 3) Use computed scores; if missing, default to None
+            scores_doc = {
+                "reliability_score": float(reliability_score) if reliability_score is not None else None,
+                "mission_score": float(mission_score) if mission_score is not None else None,
+                "criticity_score": float(criticity_score) if criticity_score is not None else None,
+                "obsolescenza": float(f"{obsolescenza:.2f}") if obsolescenza is not None else None,
+            }
+
+            # 4) Save valuation linked to device
+            insert_valuation(clinic_current, new_device_id, parametri_dict, scores_doc)
+
+            st.success("✅ Device and valuation saved")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Errore salvataggio: {e}")
+
+
 def gaussmf(x, mean, sigma):
     return np.exp(-((x - mean) ** 2) / (2 * sigma ** 2))
 
@@ -818,4 +868,3 @@ if not df.equals(df_edited):
         st.success("Modifiche salvate!")
 else:
     st.write("### Nessuna modifica effettuata")
-
