@@ -4,7 +4,6 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 import psycopg2
 import json
-import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 import io
@@ -17,13 +16,17 @@ from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode
 # --- PostgreSQL helpers ---
 @st.cache_resource
 def get_pg_conn():
-    return psycopg2.connect(
-        host=st.secrets["postgres"]["host"],
-        port=st.secrets["postgres"].get("port", 5432),
-        dbname=st.secrets["postgres"]["dbname"],
-        user=st.secrets["postgres"]["user"],
-        password=st.secrets["postgres"]["password"],
-    )
+    conn_kwargs = {
+        "host": st.secrets["postgres"]["host"],
+        "port": st.secrets["postgres"].get("port", 5432),
+        "dbname": st.secrets["postgres"]["dbname"],
+        "user": st.secrets["postgres"]["user"],
+        "password": st.secrets["postgres"]["password"],
+    }
+    sslmode = st.secrets["postgres"].get("sslmode")
+    if sslmode:
+        conn_kwargs["sslmode"] = sslmode
+    return psycopg2.connect(**conn_kwargs)
 
 
 def ensure_pg_tables():
@@ -42,9 +45,9 @@ def ensure_pg_tables():
                 created_at TIMESTAMP DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS streamlit_valutazioni (
+            CREATE TABLE IF NOT EXISTS valuations (
                 id SERIAL PRIMARY KEY,
-                user_email TEXT NOT NULL,
+                clinic TEXT NOT NULL,
                 device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
                 created_at TIMESTAMP DEFAULT NOW(),
                 normalized_age DOUBLE PRECISION,
@@ -58,8 +61,8 @@ def ensure_pg_tables():
                 obsolescenza DOUBLE PRECISION,
                 parametri_json JSONB
             );
-            CREATE INDEX IF NOT EXISTS idx_streamlit_val_user ON streamlit_valutazioni(user_email);
             CREATE INDEX IF NOT EXISTS idx_devices_clinic ON devices(clinic);
+            CREATE INDEX IF NOT EXISTS idx_valuations_clinic ON valuations(clinic);
             """
         )
     return conn
@@ -107,20 +110,20 @@ def list_devices(clinic: str):
     return devices
 
 
-def insert_valutazione(user_email: str, device_id: int | None, parametri: dict, scores: dict):
+def insert_valuation(clinic: str, device_id: int | None, parametri: dict, scores: dict):
     conn = ensure_pg_tables()
     with conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO streamlit_valutazioni
-            (user_email, device_id, normalized_age, eq_function, cost_levels, failure_rate, up_time,
+            INSERT INTO valuations
+            (clinic, device_id, normalized_age, eq_function, cost_levels, failure_rate, up_time,
              reliability_score, mission_score, criticity_score, obsolescenza, parametri_json)
             VALUES
             (%s, %s, %s, %s, %s, %s, %s,
              %s, %s, %s, %s, %s)
             """,
             (
-                user_email,
+                clinic,
                 device_id,
                 parametri.get("normalized_age"),
                 parametri.get("eq_function"),
@@ -136,28 +139,27 @@ def insert_valutazione(user_email: str, device_id: int | None, parametri: dict, 
         )
 
 
-def load_valutazioni(user_email: str) -> list[dict]:
+def load_valuations(clinic: str) -> list[dict]:
     conn = ensure_pg_tables()
     with conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT v.user_email, v.created_at,
+            SELECT v.created_at,
                    v.normalized_age, v.eq_function, v.cost_levels, v.failure_rate, v.up_time,
                    v.reliability_score, v.mission_score, v.criticity_score, v.obsolescenza,
                    v.parametri_json, d.name as device_name, d.model as device_model
-            FROM streamlit_valutazioni v
+            FROM valuations v
             LEFT JOIN devices d ON d.id = v.device_id
-            WHERE v.user_email = %s
+            WHERE v.clinic = %s
             ORDER BY v.created_at DESC
             """,
-            (user_email,),
+            (clinic,),
         )
         rows = cur.fetchall()
 
     results = []
     for r in rows:
         (
-            _user,
             created_at,
             normalized_age,
             eq_function,
@@ -172,7 +174,6 @@ def load_valutazioni(user_email: str) -> list[dict]:
             device_name,
             device_model,
         ) = r
-
         base = {
             "normalized_age": normalized_age,
             "eq_function": eq_function,
@@ -196,65 +197,89 @@ def load_valutazioni(user_email: str) -> list[dict]:
     return results
 
 
-# --- Stato ---
-if "user" not in st.session_state:
-    st.session_state["user"] = None
+def load_valuations_for_device(clinic: str, device_id: int) -> list[dict]:
+    conn = ensure_pg_tables()
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT v.created_at,
+                   v.normalized_age, v.eq_function, v.cost_levels, v.failure_rate, v.up_time,
+                   v.reliability_score, v.mission_score, v.criticity_score, v.obsolescenza,
+                   v.parametri_json, d.name as device_name, d.model as device_model
+            FROM valuations v
+            LEFT JOIN devices d ON d.id = v.device_id
+            WHERE v.clinic = %s AND v.device_id = %s
+            ORDER BY v.created_at DESC
+            """,
+            (clinic, device_id),
+        )
+        rows = cur.fetchall()
 
-# --- Identificazione clinica (niente Firebase) ---
-st.title("Dashboard Obsolescence Medical Device")
+    results = []
+    for r in rows:
+        (
+            created_at,
+            normalized_age,
+            eq_function,
+            cost_levels,
+            failure_rate,
+            up_time,
+            reliability_score,
+            mission_score,
+            criticity_score,
+            obsolescenza,
+            parametri_json,
+            device_name,
+            device_model,
+        ) = r
+        base = {
+            "normalized_age": normalized_age,
+            "eq_function": eq_function,
+            "cost_levels": cost_levels,
+            "failure_rate": failure_rate,
+            "up_time": up_time,
+            "Reliability": reliability_score,
+            "Mission": mission_score,
+            "Criticity": criticity_score,
+            "Obsolescence": obsolescenza,
+            "Device": device_name,
+            "Model": device_model,
+            "created_at": created_at,
+        }
+        if parametri_json:
+            try:
+                base.update(json.loads(parametri_json))
+            except Exception:
+                pass
+        results.append(base)
+    return results
 
-with st.container():
-    st.subheader("Clinic identification")
-    clinic = st.text_input("Clinic/Hospital name", value=st.session_state.get("user") or "")
-    if st.button("Set clinic"):
-        st.session_state["user"] = clinic.strip()
-        st.success("Clinic set")
-        st.rerun()
+# --- Stato utente (clinic id semplice) ---
+if "clinic" not in st.session_state:
+    st.session_state["clinic"] = None
 
-if not st.session_state.get("user"):
-    st.info("Set the clinic name to proceed.")
+# --- UI di identificazione clinica ---
+if st.session_state["clinic"] is None:
+    st.title("🔐 Set clinic")
+    clinic_input = st.text_input("Clinic/Hospital name")
+    if st.button("Continue"):
+        if not clinic_input.strip():
+            st.error("Insert a clinic name")
+        else:
+            st.session_state["clinic"] = clinic_input.strip()
+            st.rerun()
     st.stop()
 
-user_email = st.session_state["user"]
+# --- Logout (reset clinic) ---
+if st.button("Logout" ):
+    st.session_state["clinic"] = None
+    st.rerun()
 
-# --- Gestione dispositivi ---
-st.subheader("Devices registry")
-with st.expander("Add new device"):
-    colA, colB = st.columns(2)
-    with colA:
-        dev_name = st.text_input("Device name")
-        dev_model = st.text_input("Model")
-        dev_serial = st.text_input("Serial number")
-    with colB:
-        dev_purchase = st.date_input("Purchase date", value=None)
-        dev_location = st.text_input("Location/Department")
-    if st.button("Save device"):
-        if not dev_name:
-            st.error("Device name is required")
-        else:
-            try:
-                insert_device(user_email, dev_name, dev_model, dev_serial, dev_purchase, dev_location)
-                st.success("Device saved")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Errore salvataggio device: {e}")
+# --- Dashboard ---
+st.title("Dashboard Obsolescence Medical Device")
 
-devices = list_devices(user_email)
-if devices:
-    df_devices = pd.DataFrame(devices)
-    st.dataframe(df_devices)
-else:
-    st.write("No devices yet.")
-
-# --- Selezione device per valutazione ---
-selected_device_id = None
-if devices:
-    options = {f"{d['name']} ({d.get('model') or ''})": d["id"] for d in devices}
-    sel = st.selectbox("Select device for evaluation", options=list(options.keys()))
-    selected_device_id = options[sel]
-
-# --- Input utente con 5 parametri ---
-st.subheader("📥 Add Device's informations (parameters)")
+# --- Input parametri ---
+st.subheader("📥 Add Device's informations")
 
 parametri_nome = [
     'normalizedAge', 'normalizedRiskLevels', 'normalizedfunctionLevels',
@@ -280,8 +305,8 @@ for i, nome in enumerate(parametri_nome_prova_con_2_parametri):
         if nome == "normalized_age":
             data_acquisto = st.date_input("Date of purchase")
             oggi = datetime.date.today()
-            eta_giorni = (oggi - data_acquisto).days if data_acquisto else 0
-            eta = eta_giorni / 365 if data_acquisto else 0.0
+            eta_giorni = (oggi - data_acquisto).days
+            eta = eta_giorni / 365
             val = eta
             st.write(f"Age: {eta:.2f}")
 
@@ -407,31 +432,31 @@ rule_r=[
 
 rule_m=[
     ctrl.Rule(eq_function['Above trh'] & up_time['Low'], mission['Medium']),
-    ctrl.Rule(eq_function['Above trh'] & up_time['Middle'], mission['High']),
-    ctrl.Rule(eq_function['Above trh'] & up_time['High'], mission['High']),
+ctrl.Rule(eq_function['Above trh'] & up_time['Middle'], mission['High']),
+ctrl.Rule(eq_function['Above trh'] & up_time['High'], mission['High']),
 
     ctrl.Rule(eq_function['Around trh'] & up_time['Low'], mission['Low']),
-    ctrl.Rule(eq_function['Around trh'] & up_time['Middle'], mission['Medium']),
-    ctrl.Rule(eq_function['Around trh'] & up_time['High'], mission['High']),
+ctrl.Rule(eq_function['Around trh'] & up_time['Middle'], mission['Medium']),
+ctrl.Rule(eq_function['Around trh'] & up_time['High'], mission['High']),
 
     ctrl.Rule(eq_function['Under trh'] & up_time['Low'], mission['Low']),
-    ctrl.Rule(eq_function['Under trh'] & up_time['Middle'], mission['Medium']),
-    ctrl.Rule(eq_function['Under trh'] & up_time['High'], mission['High']),
+ctrl.Rule(eq_function['Under trh'] & up_time['Middle'], mission['Medium']),
+ctrl.Rule(eq_function['Under trh'] & up_time['High'], mission['High']),
 ]
 
 
 rules = [
     ctrl.Rule(normalized_age['New'] & eq_function['Under trh'], criticity['VeryLow']),
-    ctrl.Rule(normalized_age['New'] & eq_function['Around trh'], criticity['Low']),
-    ctrl.Rule(normalized_age['New'] & eq_function['Above trh'], criticity['Medium']),
+ctrl.Rule(normalized_age['New'] & eq_function['Around trh'], criticity['Low']),
+ctrl.Rule(normalized_age['New'] & eq_function['Above trh'], criticity['Medium']),
 
     ctrl.Rule(normalized_age['Middle'] & eq_function['Under trh'], criticity['Low']),
-    ctrl.Rule(normalized_age['Middle'] & eq_function['Around trh'], criticity['Medium']),
-    ctrl.Rule(normalized_age['Middle'] & eq_function['Above trh'], criticity['High']),
+ctrl.Rule(normalized_age['Middle'] & eq_function['Around trh'], criticity['Medium']),
+ctrl.Rule(normalized_age['Middle'] & eq_function['Above trh'], criticity['High']),
 
     ctrl.Rule(normalized_age['Old'] & eq_function['Under trh'], criticity['Low']),
-    ctrl.Rule(normalized_age['Old'] & eq_function['Around trh'], criticity['High']),
-    ctrl.Rule(normalized_age['Old'] & eq_function['Above trh'], criticity['VeryHigh']),
+ctrl.Rule(normalized_age['Old'] & eq_function['Around trh'], criticity['High']),
+ctrl.Rule(normalized_age['Old'] & eq_function['Above trh'], criticity['VeryHigh']),
 
     ctrl.Rule(cost_levels['high'] & normalized_age['New'], criticity['Low']),
     ctrl.Rule(cost_levels['high'] & normalized_age['Middle'], criticity['Medium']),
@@ -446,21 +471,22 @@ rules = [
     ctrl.Rule(cost_levels['low'] & normalized_age['Old'], criticity['Medium']),
 
     ctrl.Rule(cost_levels['high'] & eq_function['Under trh'], criticity['Low']),
-    ctrl.Rule(cost_levels['high'] & eq_function['Around trh'], criticity['High']),
-    ctrl.Rule(cost_levels['high'] & eq_function['Above trh'], criticity['VeryHigh']),
+ctrl.Rule(cost_levels['high'] & eq_function['Around trh'], criticity['High']),
+ctrl.Rule(cost_levels['high'] & eq_function['Above trh'], criticity['VeryHigh']),
 
     ctrl.Rule(cost_levels['medium'] & eq_function['Under trh'], criticity['VeryLow']),
-    ctrl.Rule(cost_levels['medium'] & eq_function['Around trh'], criticity['Medium']),
-    ctrl.Rule(cost_levels['medium'] & eq_function['Above trh'], criticity['High']),
+ctrl.Rule(cost_levels['medium'] & eq_function['Around trh'], criticity['Medium']),
+ctrl.Rule(cost_levels['medium'] & eq_function['Above trh'], criticity['High']),
 
     ctrl.Rule(cost_levels['low'] & eq_function['Under trh'], criticity['VeryLow']),
-    ctrl.Rule(cost_levels['low'] & eq_function['Around trh'], criticity['Low']),
-    ctrl.Rule(cost_levels['low'] & eq_function['Above trh'], criticity['Medium']),
+ctrl.Rule(cost_levels['low'] & eq_function['Around trh'], criticity['Low']),
+ctrl.Rule(cost_levels['low'] & eq_function['Above trh'], criticity['Medium']),
 ]
 
-# Create the control system
+# Create the control system (this is the equivalent of the fuzzy system in Matlab)
 mission_ctrl=ctrl.ControlSystem(rule_m)
 reliability_ctrl=ctrl.ControlSystem(rule_r)
+
 
 plt.style.use("seaborn-v0_8-muted")
 
@@ -489,46 +515,59 @@ def plot_membership_functions(antecedent, title):
     st.pyplot(fig)
     plt.close(fig)
 
-# Simulators
+
+# Create a simulation object for the fuzzy control system
 mission_simulation=ctrl.ControlSystemSimulation(mission_ctrl)
 reliability_simulation=ctrl.ControlSystemSimulation(reliability_ctrl)
 
 rule_f = [
+    # mission high
     ctrl.Rule(mission_result['High'] & reliability_result['High'], criticity['VeryHigh']),
     ctrl.Rule(mission_result['High'] & reliability_result['Medium'], criticity['High']),
     ctrl.Rule(mission_result['High'] & reliability_result['Low'], criticity['High']),
 
+    # mission medium
     ctrl.Rule(mission_result['Medium'] & reliability_result['High'], criticity['VeryHigh']),
     ctrl.Rule(mission_result['Medium'] & reliability_result['Medium'], criticity['Medium']),
     ctrl.Rule(mission_result['Medium'] & reliability_result['Low'], criticity['Low']),
 
+    # mission low
     ctrl.Rule(mission_result['Low'] & reliability_result['High'], criticity['High']),
     ctrl.Rule(mission_result['Low'] & reliability_result['Medium'], criticity['Low']),
     ctrl.Rule(mission_result['Low'] & reliability_result['Low'], criticity['VeryLow']),
 ]
 
-# Compute inputs
+
+# Calculate criticity for each device
 for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs):
     valore = val if val is not None else 0.0
-    if nome in ["up_time", "eq_function"]:
+    
+    if nome in ["up_time", "eq_function"]:   # parametri per mission
         mission_simulation.input[nome] = valore
-    elif nome in ["normalized_age", "failure_rate"]:
+    elif nome in ["normalized_age", "failure_rate"]:      # parametri per reliability
         reliability_simulation.input[nome] = valore
-
-
+# Compute the fuzzy output (Criticity)
 def show_fuzzy_output(fuzzy_var, sim):
+    # Forzo il calcolo
     sim.compute()
+    
+    # Normalizzo il nome (per evitare problemi di maiuscole/minuscole)
     var_name = fuzzy_var.label
     output_keys = list(sim.output.keys())
+
+    # Controllo robusto: cerco ignorando le maiuscole
     matching_key = None
     for k in output_keys:
         if k.lower() == var_name.lower():
             matching_key = k
             break
+
     if matching_key is None:
         raise KeyError(f"Variabile '{var_name}' non trovata tra le uscite disponibili: {output_keys}")
+
     output_value = sim.output[matching_key]
 
+    # Plot
     fig, ax = plt.subplots(figsize=(5, 2.5))
     colors = plt.cm.viridis(np.linspace(0, 1, len(fuzzy_var.terms)))
     x = fuzzy_var.universe
@@ -536,13 +575,19 @@ def show_fuzzy_output(fuzzy_var, sim):
     for idx, term in enumerate(fuzzy_var.terms):
         mf = fuzzy_var[term].mf
         y = mf
+
+        # Plot della curva
         ax.plot(x, y, label=term.capitalize(), linewidth=1, color=colors[idx])
+
+        # Attivazione
         activation = fuzz.interp_membership(x, y, output_value)
         ax.fill_between(x, 0, np.fmin(activation, y), alpha=0.4, color=colors[idx])
 
+    # Linea sul defuzzificato
     ax.axvline(x=output_value, color='red', linestyle='--', linewidth=1,
                label=f'Uscita = {output_value:.2f}')
 
+    # Stile
     ax.set_title(f"Output fuzzy: {matching_key}", fontsize=9, weight='bold', pad=10)
     ax.set_xlabel("Valore", fontsize=6)
     ax.set_ylabel("Appartenenza", fontsize=6)
@@ -566,10 +611,16 @@ mission_score=show_fuzzy_output(mission, mission_simulation)
 criticity_simulation.input['mission_result'] = mission_score
 criticity_simulation.input['reliability_result'] = reliability_score
 
+#criticity_simulation.compute()
+
+#print(criticity_simulation.output['criticity'])
 criticity_score=show_fuzzy_output(criticity, criticity_simulation)
+
+
 
 # Store the result (scaled by 10 as in your Matlab code)
 obsolescenza = criticity_simulation.output['criticity'] * 10
+
 
 if obsolescenza is not None:
     st.write("**Obsolescence score:**", f"{obsolescenza:.2f}")
@@ -581,43 +632,121 @@ else:
     st.info("🟡 Inserisci almeno un parametro per calcolare lo score")
 
 
+def gaussmf(x, mean, sigma):
+    return np.exp(-((x - mean) ** 2) / (2 * sigma ** 2))
+
+x_age = np.linspace(0, 1, 100)
+young = gaussmf(x_age, 0.2, 0.1)
+middle = gaussmf(x_age, 0.5, 0.1)
+old = gaussmf(x_age, 0.8, 0.1)
+
+plot_membership_functions(normalized_age, 'Age')
+plot_membership_functions(eq_function, 'Equipment function')
+plot_membership_functions(cost_levels, 'Cost')
+plot_membership_functions(failure_rate, 'Failure rate')
+plot_membership_functions(up_time, 'Uptime')
+
+# --- Sezione dispositivi e salvataggio/lettura Valutazioni su PostgreSQL ---
+st.subheader("🖥️ Devices & Valuations (PostgreSQL)")
+clinic = st.session_state["clinic"]
+
+with st.expander("Add new device"):
+    colA, colB = st.columns(2)
+    with colA:
+        dev_name = st.text_input("Device name")
+        dev_model = st.text_input("Model")
+        dev_serial = st.text_input("Serial number")
+    with colB:
+        dev_purchase = st.date_input("Purchase date", value=None)
+        dev_location = st.text_input("Location/Department")
+    if st.button("Save device"):
+        if not dev_name:
+            st.error("Device name is required")
+        else:
+            try:
+                insert_device(clinic, dev_name, dev_model, dev_serial, dev_purchase, dev_location)
+                st.success("Device saved")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Errore salvataggio device: {e}")
+
+# List devices
+devices = list_devices(clinic)
+if devices:
+    df_devices = pd.DataFrame(devices)
+    st.dataframe(df_devices)
+else:
+    st.write("No devices yet.")
+
+# New: dropdown to view a device and its valuations
+st.subheader("🔎 View a device")
+if devices:
+    view_options = {f"{d['name']} ({d.get('model') or ''})": d for d in devices}
+    view_label = st.selectbox("Select device to view", options=list(view_options.keys()), key="view_device_select")
+    d = view_options[view_label]
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.write(f"Model: {d.get('model') or '-'}")
+        st.write(f"Serial: {d.get('serial_number') or '-'}")
+    with col2:
+        st.write(f"Purchase: {d.get('purchase_date') or '-'}")
+        st.write(f"Location: {d.get('location') or '-'}")
+    with col3:
+        st.write(f"Created: {d.get('created_at')}")
+
+    try:
+        device_vals = load_valuations_for_device(clinic, d["id"])
+        if device_vals:
+            dfv = pd.DataFrame(device_vals)
+            st.write("Valuations for this device")
+            st.dataframe(dfv)
+        else:
+            st.write("No valuations for this device yet.")
+    except Exception as e:
+        st.error(f"Errore lettura valutazioni device: {e}")
+
+# Choose device for valuation
+selected_device_id = None
+if devices:
+    options = {f"{d['name']} ({d.get('model') or ''})": d["id"] for d in devices}
+    sel = st.selectbox("Select device for evaluation", options=list(options.keys()))
+    selected_device_id = options[sel]
+
+# Save valuation
+if st.button("Save valuation"):
+    parametri_dict = {
+    nome: val if val is not None else None
+    for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs)
+    }
+
+    doc = {
+        "reliability_score": float(reliability_score) if reliability_score is not None else None,
+        "mission_score": float(mission_score) if mission_score is not None else None,
+        "criticity_score": float(criticity_score) if criticity_score is not None else None,
+        "obsolescenza": float(f"{obsolescenza:.2f}") if obsolescenza is not None else None,
+    }
+
+    try:
+        insert_valuation(clinic, selected_device_id, parametri_dict, doc)
+        st.success("✅ Valutation saved to PostgreSQL!")
+    except Exception as e:
+        st.error(f"Errore salvataggio PostgreSQL: {e}")
+
+st.subheader("📋 Valutations saved")
+try:
+    valutazioni_list = load_valuations(clinic)
+except Exception as e:
+    st.error(f"Errore lettura PostgreSQL: {e}")
+    valutazioni_list = []
+
+
 def safe_float(value, default=0.0):
     try:
         return float(value)
     except (ValueError, TypeError):
         return default
 
-plot_membership_functions(normalized_age, 'Age')
-plot_membership_functions(eq_function, 'Failure rate')
-plot_membership_functions(cost_levels, 'Cost')
-plot_membership_functions(failure_rate, 'Failure rate')
-plot_membership_functions(up_time, 'Uptime')
-
-# --- Salvataggio su PostgreSQL ---
-if st.button("Save valuation"):
-    parametri_dict = {
-        nome: val if val is not None else None
-        for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs)
-    }
-    scores = {
-        "reliability_score": float(reliability_score) if reliability_score is not None else None,
-        "mission_score": float(mission_score) if mission_score is not None else None,
-        "criticity_score": float(criticity_score) if criticity_score is not None else None,
-        "obsolescenza": float(f"{obsolescenza:.2f}") if obsolescenza is not None else None,
-    }
-    try:
-        insert_valutazione(user_email, selected_device_id, parametri_dict, scores)
-        st.success("✅ Valuation saved to PostgreSQL!")
-    except Exception as e:
-        st.error(f"Errore salvataggio PostgreSQL: {e}")
-
-st.subheader("📋 Valutations saved")
-try:
-    valutazioni_list = load_valutazioni(user_email)
-except Exception as e:
-    st.error(f"Errore lettura PostgreSQL: {e}")
-    valutazioni_list = []
-
+# Build table
 rows = []
 for d in valutazioni_list:
     row = {k: safe_float(v) for k, v in d.items() if k not in ("created_at", "Device", "Model")}
@@ -646,20 +775,24 @@ for col in df.columns:
             precision=2
         )
 
+# Obsolescence read-only
 gb.configure_column(
     "Obsolescence", 
     editable=False,
     cellStyle={'backgroundColor': '#f0f0f0'}
 )
 
+# extra grid options
 gb.configure_grid_options(
     enableRangeSelection=True,
     enableClipboard=True,
     suppressMovableColumns=False
 )
 
+# Build options
 grid_options = gb.build()
 
+# Show grid
 st.write("### Valutazioni (Clicca doppio click sulle celle per modificare)")
 
 grid_response = AgGrid(
@@ -675,6 +808,7 @@ grid_response = AgGrid(
     reload_data=True,
 )
 
+# Edited df
 df_edited = grid_response['data']
 
 if not df.equals(df_edited):
