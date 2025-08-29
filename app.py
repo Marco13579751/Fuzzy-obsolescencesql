@@ -276,68 +276,7 @@ if st.button("Logout" ):
 st.title("Dashboard Obsolescence Medical Device")
 
 # --- Input parametri ---
-st.subheader("📥 Add Device's informations")
-
-parametri_nome = [
-    'normalizedAge', 'normalizedRiskLevels', 'normalizedfunctionLevels',
-    'normalizedStateLevels', 'normalizedLifeResLevels', 'normalizedObsLevels',
-    'normalizedUtilizationLevels', 'normalizedUptime',
-    'normalizedfaultRateLevels', 'normalizedEoLS'
-]
-parametri_nome_prova_con_2_parametri=['normalized_age','eq_function','cost_levels','failure_rate','up_time']
-
-inputs = []
-
-if st.button("🔄 Clear cache & refresh"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
-    
-# Mostra i box in righe da 3 colonne
-colonne = st.columns(3)
-
-for i, nome in enumerate(parametri_nome_prova_con_2_parametri):
-    col = colonne[i % 3]
-    with col:
-        if nome == "normalized_age":
-            data_acquisto = st.date_input("Date of purchase")
-            oggi = datetime.date.today()
-            eta_giorni = (oggi - data_acquisto).days
-            eta = eta_giorni / 365
-            val = eta
-            st.write(f"Age: {eta:.2f}")
-
-        elif nome == "eq_function":
-            val = st.selectbox(
-                "Equipment function",
-                options=[1, 2, 3, 4],
-                key=f"failure_rate_{i}"
-            )
-        elif nome=="cost_levels" :
-            val = st.number_input(
-                "Cost",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                key=f"cost_{i}"
-            )
-        elif nome=="up_time" :
-            val = st.number_input(
-                "Uptime",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                key=f"up_time_{i}"
-            )
-        elif nome=="failure_rate" :
-            val = st.number_input(
-                "Failure rate",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                key=f"failure_{i}"
-            )
-        inputs.append(val if val != 0.0 else None)
+# (Old manual parameters UI removed; parameters are now captured when adding a device.)
 
 
 # --- Fuzzy logic ---
@@ -536,13 +475,8 @@ rule_f = [
 
 
 # Calculate criticity for each device
-for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs):
-    valore = val if val is not None else 0.0
-    
-    if nome in ["up_time", "eq_function"]:   # parametri per mission
-        mission_simulation.input[nome] = valore
-    elif nome in ["normalized_age", "failure_rate"]:      # parametri per reliability
-        reliability_simulation.input[nome] = valore
+# (Old manual parameters UI removed; parameters are now captured when adding a device.)
+
 # Compute the fuzzy output (Criticity)
 def show_fuzzy_output(fuzzy_var, sim):
     # Forzo il calcolo
@@ -656,6 +590,40 @@ def compute_scores_from_params(params: dict) -> dict:
     }
 
 
+def render_fuzzy_from_params(params: dict) -> dict:
+    # Fresh simulations
+    _mission_sim = ctrl.ControlSystemSimulation(mission_ctrl)
+    _reliability_sim = ctrl.ControlSystemSimulation(reliability_ctrl)
+
+    _mission_sim.input['eq_function'] = float(params.get('eq_function') or 0.0)
+    _mission_sim.input['up_time'] = float(params.get('up_time') or 0.0)
+    _reliability_sim.input['normalized_age'] = float(params.get('normalized_age') or 0.0)
+    _reliability_sim.input['failure_rate'] = float(params.get('failure_rate') or 0.0)
+
+    rel = show_fuzzy_output(reliability, _reliability_sim)
+    mis = show_fuzzy_output(mission, _mission_sim)
+
+    _crit_ctrl = ctrl.ControlSystem(rule_f)
+    _crit_sim = ctrl.ControlSystemSimulation(_crit_ctrl)
+    _crit_sim.input['mission_result'] = mis
+    _crit_sim.input['reliability_result'] = rel
+    crit = show_fuzzy_output(criticity, _crit_sim)
+    obs = crit * 10.0
+
+    st.write("**Obsolescence score:**", f"{obs:.2f}")
+    if obs > 60:
+        st.error("⚠️ Device partially obsolet")
+    else:
+        st.success("✅ Device in good condition")
+
+    return {
+        'reliability_score': rel,
+        'mission_score': mis,
+        'criticity_score': crit,
+        'obsolescenza': obs,
+    }
+
+
 if obsolescenza is not None:
     st.write("**Obsolescence score:**", f"{obsolescenza:.2f}")
     if obsolescenza > 60:
@@ -703,7 +671,6 @@ with st.expander("Add new device"):
         p_cost = st.number_input("Cost", min_value=0.0, step=1.0, format="%.2f", key="newdev_cost")
         p_up_time = st.number_input("Uptime", min_value=0.0, step=1.0, format="%.2f", key="newdev_uptime")
     with colP3:
-        # normalized_age computed from purchase date if provided
         if dev_purchase:
             days = (datetime.date.today() - dev_purchase).days
             p_norm_age = days / 365.0
@@ -711,22 +678,25 @@ with st.expander("Add new device"):
             p_norm_age = st.number_input("Normalized age", min_value=0.0, step=0.1, format="%.2f", key="newdev_normage")
         st.write(f"Computed age: {p_norm_age:.2f}")
 
+    # Preview graphs
+    preview_params = {
+        'normalized_age': p_norm_age,
+        'eq_function': p_eq_function,
+        'cost_levels': p_cost,
+        'failure_rate': p_failure_rate,
+        'up_time': p_up_time,
+    }
+    if st.button("Preview calculation", key="preview_new_device"):
+        render_fuzzy_from_params(preview_params)
+
     if st.button("Save device"):
         if not dev_name:
             st.error("Device name is required")
         else:
             try:
                 new_id = insert_device(clinic, dev_name, dev_model, dev_serial, dev_purchase, dev_location)
-                # Build params and compute scores
-                dev_params = {
-                    'normalized_age': p_norm_age,
-                    'eq_function': p_eq_function,
-                    'cost_levels': p_cost,
-                    'failure_rate': p_failure_rate,
-                    'up_time': p_up_time,
-                }
-                scores = compute_scores_from_params(dev_params)
-                insert_valuation(clinic, new_id, dev_params, scores)
+                scores = compute_scores_from_params(preview_params)
+                insert_valuation(clinic, new_id, preview_params, scores)
                 st.success("Device and initial valuation saved")
                 st.rerun()
             except Exception as e:
@@ -759,8 +729,20 @@ if devices:
     try:
         device_vals = load_valuations_for_device(clinic, d["id"])
         if device_vals:
+            latest = device_vals[0]
+            st.write("Latest valuation (graphs below)")
+            # Build params from latest row
+            latest_params = {
+                'normalized_age': latest.get('normalized_age'),
+                'eq_function': latest.get('eq_function'),
+                'cost_levels': latest.get('cost_levels'),
+                'failure_rate': latest.get('failure_rate'),
+                'up_time': latest.get('up_time'),
+            }
+            render_fuzzy_from_params(latest_params)
+
             dfv = pd.DataFrame(device_vals)
-            st.write("Valuations for this device")
+            st.write("All valuations for this device")
             st.dataframe(dfv)
         else:
             st.write("No valuations for this device yet.")
@@ -776,10 +758,27 @@ if devices:
 
 # Save valuation
 if st.button("Save valuation"):
-    parametri_dict = {
-    nome: val if val is not None else None
-    for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs)
-    }
+    # (Old manual parameters UI removed; parameters are now captured when adding a device.)
+    # This block will need to be updated to fetch parameters from the selected device's last valuation
+    # or to re-prompt the user for parameters if no valuation exists.
+    # For now, we'll use dummy values or raise an error if no device is selected.
+    if selected_device_id is None:
+        st.error("Please select a device first to save a valuation.")
+        st.stop()
+
+    # Fetch the last valuation for the selected device to get its parameters
+    try:
+        last_valuation = load_valuations_for_device(clinic, selected_device_id)[0]
+        parametri_dict = {
+            'normalized_age': last_valuation.get('normalized_age'),
+            'eq_function': last_valuation.get('eq_function'),
+            'cost_levels': last_valuation.get('cost_levels'),
+            'failure_rate': last_valuation.get('failure_rate'),
+            'up_time': last_valuation.get('up_time'),
+        }
+    except IndexError:
+        st.warning("No previous valuation found for this device. Please add a new device or provide parameters.")
+        st.stop()
 
     doc = {
         "reliability_score": float(reliability_score) if reliability_score is not None else None,
