@@ -262,7 +262,7 @@ if "clinic" not in st.session_state:
 if st.session_state["clinic"] is None:
     st.title("🔐 Set clinic")
     clinic_input = st.text_input("Clinic/Hospital name")
-    if st.button("Continue"):
+    if st.button("Continue", key="continue_clinic"):
         if not clinic_input.strip():
             st.error("Insert a clinic name")
         else:
@@ -271,7 +271,7 @@ if st.session_state["clinic"] is None:
     st.stop()
 
 # --- Logout (reset clinic) ---
-if st.button("Logout" ):
+if st.button("Logout", key="logout"):
     st.session_state["clinic"] = None
     st.rerun()
 
@@ -303,7 +303,7 @@ for i, nome in enumerate(parametri_nome_prova_con_2_parametri):
     col = colonne[i % 3]
     with col:
         if nome == "normalized_age":
-            data_acquisto = st.date_input("Date of purchase")
+            data_acquisto = st.date_input("Date of purchase", key=f"purchase_date_{i}")
             oggi = datetime.date.today()
             eta_giorni = (oggi - data_acquisto).days
             eta = eta_giorni / 365
@@ -314,7 +314,7 @@ for i, nome in enumerate(parametri_nome_prova_con_2_parametri):
             val = st.selectbox(
                 "Equipment function",
                 options=[1, 2, 3, 4],
-                key=f"failure_rate_{i}"
+                key=f"eq_function_{i}"
             )
         elif nome=="cost_levels" :
             val = st.number_input(
@@ -635,9 +635,9 @@ else:
 st.subheader("💾 Save device with these parameters")
 col_dev1, col_dev2 = st.columns(2)
 with col_dev1:
-    devp_name = st.text_input("Device name (required)")
-    devp_model = st.text_input("Model")
-    devp_serial = st.text_input("Serial number")
+    devp_name = st.text_input("Device name (required)", key="params_dev_name")
+    devp_model = st.text_input("Model", key="params_dev_model")
+    devp_serial = st.text_input("Serial number", key="params_dev_serial")
 with col_dev2:
     devp_purchase = st.date_input("Purchase date", value=None, key="params_purchase_date")
     devp_location = st.text_input("Location/Department", key="params_location")
@@ -703,13 +703,13 @@ clinic = st.session_state["clinic"]
 with st.expander("Add new device"):
     colA, colB = st.columns(2)
     with colA:
-        dev_name = st.text_input("Device name")
-        dev_model = st.text_input("Model")
-        dev_serial = st.text_input("Serial number")
+        dev_name = st.text_input("Device name", key="expander_dev_name")
+        dev_model = st.text_input("Model", key="expander_dev_model")
+        dev_serial = st.text_input("Serial number", key="expander_dev_serial")
     with colB:
-        dev_purchase = st.date_input("Purchase date", value=None)
-        dev_location = st.text_input("Location/Department")
-    if st.button("Save device"):
+        dev_purchase = st.date_input("Purchase date", value=None, key="expander_dev_purchase")
+        dev_location = st.text_input("Location/Department", key="expander_dev_location")
+    if st.button("Save device", key="save_device_expander"):
         if not dev_name:
             st.error("Device name is required")
         else:
@@ -759,11 +759,11 @@ if devices:
 selected_device_id = None
 if devices:
     options = {f"{d['name']} ({d.get('model') or ''})": d["id"] for d in devices}
-    sel = st.selectbox("Select device for evaluation", options=list(options.keys()))
+    sel = st.selectbox("Select device for evaluation", options=list(options.keys()), key="select_device_for_evaluation")
     selected_device_id = options[sel]
 
 # Save valuation
-if st.button("Save valuation"):
+if st.button("Save valuation", key="save_valuation"):
     parametri_dict = {
     nome: val if val is not None else None
     for nome, val in zip(parametri_nome_prova_con_2_parametri, inputs)
@@ -868,3 +868,4 @@ if not df.equals(df_edited):
         st.success("Modifiche salvate!")
 else:
     st.write("### Nessuna modifica effettuata")
+
