@@ -14,7 +14,6 @@ from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode
 
 
 # --- PostgreSQL helpers ---
-@st.cache_resource
 def get_pg_conn():
     conn_kwargs = {
         "host": st.secrets["postgres"]["host"],
@@ -30,8 +29,7 @@ def get_pg_conn():
 
 
 def ensure_pg_tables():
-    conn = get_pg_conn()
-    with conn, conn.cursor() as cur:
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS devices (
@@ -65,12 +63,11 @@ def ensure_pg_tables():
             CREATE INDEX IF NOT EXISTS idx_valuations_clinic ON valuations(clinic);
             """
         )
-    return conn
 
 
 def insert_device(clinic: str, name: str, model: str, serial_number: str, purchase_date: datetime.date | None, location: str | None):
-    conn = ensure_pg_tables()
-    with conn, conn.cursor() as cur:
+    ensure_pg_tables()
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO devices (clinic, name, model, serial_number, purchase_date, location)
@@ -84,8 +81,8 @@ def insert_device(clinic: str, name: str, model: str, serial_number: str, purcha
 
 
 def list_devices(clinic: str):
-    conn = ensure_pg_tables()
-    with conn, conn.cursor() as cur:
+    ensure_pg_tables()
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, name, model, serial_number, purchase_date, location, created_at
@@ -111,8 +108,8 @@ def list_devices(clinic: str):
 
 
 def insert_valuation(clinic: str, device_id: int | None, parametri: dict, scores: dict):
-    conn = ensure_pg_tables()
-    with conn, conn.cursor() as cur:
+    ensure_pg_tables()
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO valuations
@@ -140,8 +137,8 @@ def insert_valuation(clinic: str, device_id: int | None, parametri: dict, scores
 
 
 def load_valuations(clinic: str) -> list[dict]:
-    conn = ensure_pg_tables()
-    with conn, conn.cursor() as cur:
+    ensure_pg_tables()
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT v.created_at,
@@ -198,8 +195,8 @@ def load_valuations(clinic: str) -> list[dict]:
 
 
 def load_valuations_for_device(clinic: str, device_id: int) -> list[dict]:
-    conn = ensure_pg_tables()
-    with conn, conn.cursor() as cur:
+    ensure_pg_tables()
+    with get_pg_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT v.created_at,
