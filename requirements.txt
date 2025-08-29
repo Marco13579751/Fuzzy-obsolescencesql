@@ -1,0 +1,8 @@
+    streamlit
+    numpy
+    scikit-fuzzy
+    pandas
+    matplotlib
+    st-aggrid
+    psycopg2-binary
+    requests
